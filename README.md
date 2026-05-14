@@ -15,15 +15,16 @@ DataGraph provides a streamlined interface for generating figures that meet the 
 * **Context Management**: Use `fixed_frame` for one-off figures with specific dimensions without affecting global settings.
 
 ## Installation
-
-Deployment of the library requires a direct installation from the remote repository; this ensures the environment resolves all scientific dependencies during the build process. Users execute the following command to target the specific subfolder containing the package manifest; this syntax directs the installer to the correct build instructions:
+Install DataGraph directly from the GitHub repository:
 
 ```bash
 pip install "git+https://github.com/boss507104/DataGraph.git#subdirectory=DataGraph"
 
 ```
 
-The inclusion of a `pyproject.toml` file enables the standard Python package manager to identify the source code; this eliminates manual configuration of the local search path. Developers may also install the package from a local directory by navigating to the relevant folder and invoking the installer:
+The #subdirectory=DataGraph option tells pip to install the package from the DataGraph folder inside the repository. The included pyproject.toml file defines the build configuration and dependencies, so no manual path configuration is required.
+
+For local development, clone the repository, move into the package directory, and run:
 
 ```bash
 pip install .
