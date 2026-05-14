@@ -1,4 +1,3 @@
-
 # DataGraph
 
 **Publication-quality matplotlib styling for Academic Research.**
@@ -14,6 +13,22 @@ DataGraph provides a streamlined interface for generating figures that meet the 
 * **Academic Palettes**: Built-in support for Okabe-Ito, Paul Tol (Vibrant, Muted, Bright), and IBM palettes.
 * **TableMaker**: Renders LaTeX-style "booktabs" tables directly in Jupyter notebooks or the terminal.
 * **Context Management**: Use `fixed_frame` for one-off figures with specific dimensions without affecting global settings.
+
+## Installation
+
+Deployment of the library requires a direct installation from the remote repository; this ensures the environment resolves all scientific dependencies during the build process. Users execute the following command to target the specific subfolder containing the package manifest; this syntax directs the installer to the correct build instructions:
+
+```bash
+pip install "git+https://github.com/boss507104/DataGraph.git#subdirectory=DataGraph"
+
+```
+
+The inclusion of a `pyproject.toml` file enables the standard Python package manager to identify the source code; this eliminates manual configuration of the local search path. Developers may also install the package from a local directory by navigating to the relevant folder and invoking the installer:
+
+```bash
+pip install .
+
+```
 
 ## Quick Start
 
@@ -43,6 +58,7 @@ ax.legend()
 dg.finalize(ax)
 plt.show()
 
+
 ```
 
 ## Core Components
@@ -59,6 +75,7 @@ dg.set_style(
     use_tex=False
 )
 
+
 ```
 
 ### 2. Colour Palettes (`Palette`)
@@ -66,19 +83,15 @@ dg.set_style(
 Access colours by name or index. The library supports fuzzy matching for palette names.
 
 * `okabe-ito` (Default)
-
-
 * `paul-tol-vibrant` | `bright` | `muted`
-
 * `ibm`
-
 * `tableau10`
-
 
 ```python
 p = dg.get_palette("vibrant")
 color = p['red']    # Name access
 color = p[0]        # Index access (wraps around)
+
 
 ```
 
@@ -92,6 +105,7 @@ with dg.fixed_frame(figure_size=(5, 4)) as (fig, ax):
     # The axes position is determined by internal fractions,
     # ensuring consistent whitespace across different plots.
 
+
 ```
 
 ### 4. TableMaker
@@ -103,6 +117,7 @@ table = dg.TableMaker(title="Performance Metrics", columns=["Metric", "Result"])
 table.add_row("R-Squared", "0.9942")
 table.add_row("RMSE", "0.021")
 table.display()
+
 
 ```
 
