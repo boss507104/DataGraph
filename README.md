@@ -125,24 +125,12 @@ table.display()
 
 | Function / Class | Description |
 | --- | --- |
-| `set_style(...)` | Initialises global matplotlib parameters.
-
- |
-| `get_palette(name)` | Returns a `Palette` object with fuzzy name matching.
-
- |
-| `finalize(ax)` | Polishes the plot (legend frames, grid, minor ticks).
-
- |
-| `fixed_frame(...)` | Context manager for isolated figure styling.
-
- |
-| `annotate_panels(...)` | Automatically adds (a), (b), (c) labels to subplots.
-
- |
-| `TableMaker(...)` | Renders academic-style tables in console or Jupyter.
-
- |
+| `set_style(...)` | Initialises global matplotlib parameters. |
+| `get_palette(name)` | Returns a `Palette` object with fuzzy name matching. |
+| `finalize(ax)` | Polishes the plot by adjusting legend frames, grid settings, and minor ticks. |
+| `fixed_frame(...)` | Context manager for isolated figure styling with fixed axes placement. |
+| `annotate_panels(...)` | Automatically adds `(a)`, `(b)`, `(c)` labels to subplots. |
+| `TableMaker(...)` | Renders academic-style tables in the console or Jupyter notebooks. |
 
 ## Version History
 
