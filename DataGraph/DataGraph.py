@@ -12,6 +12,10 @@ Usage
     ax.plot(x, y, color=palette["blue"])
     plt.show()
 
+    # Progress bar (GitHub-safe in Jupyter)
+    for x in dg.track(range(1000), desc="Training"):
+        dg.sleep(0.001)
+
 Version history
 ---------------
     1.0.0  (10 Feb 2026)  Initial release.
@@ -24,10 +28,20 @@ Version history
                            Public helper aliases; Palette repr;
                            lazy rich import; Academic monochrome table theme;
                            removed unused os import.
+    3.0.0  (19 May 2026)  ProgressBar + track() — static-HTML progress bar
+                           in the TableMaker style. Renders as plain HTML in
+                           Jupyter so the final state survives GitHub's
+                           notebook renderer (unlike tqdm.auto's ipywidgets).
+                           Throttled refresh, ANSI fallback for terminals,
+                           iterator + context-manager interface.
+    3.0.1  (19 May 2026)  Bind dg.sleep to time.sleep (was declared in
+                           __all__ but never assigned, causing
+                           AttributeError on import-time *-imports and on
+                           direct attribute access).
 """
 
-__version__ = "2.0.0"
-__date__ = "21 Apr 2026"
+__version__ = "3.0.1"
+__date__ = "19 May 2026"
 
 __all__ = [
     # ── Constants ──
@@ -48,6 +62,10 @@ __all__ = [
     "apply_grid",
     # ── Table ──
     "TableMaker",
+    # ── Progress ──
+    "ProgressBar",
+    "track",
+    "sleep",
     # ── Info ──
     "info",
 ]
@@ -55,11 +73,17 @@ __all__ = [
 # ── Imports ──────────────────────────────────────────────────────────
 
 import sys
+import time
+import html as _html
 from contextlib import contextmanager
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+
+from io import StringIO
+from rich.console import Console
+from rich.table import Table
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -75,6 +99,11 @@ _DEFAULT_SUBPLOT = {
     "right":  0.95,
     "top":    0.93,
 }
+
+# ── Re-export: stdlib sleep ─────────────────────────────────────────
+# Bound here (not via tqdm.auto, which depends on ipywidgets and is on
+# track to break in future Jupyter releases). Pure stdlib, zero risk.
+sleep = time.sleep
 
 # ── Colour Palettes ─────────────────────────────────────────────────
 
@@ -181,6 +210,11 @@ class Palette:
 
 
 # ── Internal Helpers ─────────────────────────────────────────────────
+
+def _is_jupyter():
+    """Detect whether code is running inside a Jupyter / IPython kernel."""
+    return "ipykernel" in sys.modules
+
 
 def _compute_scale(fig_width, exponent=_SCALE_EXPONENT):
     raw = (fig_width / _REF_WIDTH) ** exponent
@@ -309,11 +343,11 @@ def _finalize(ax=None, fix_origin=True, keep="x",
 
 # ── Public Aliases for Helpers ───────────────────────────────────────
 
-finalize         = _finalize
-style_colorbar   = _style_colorbar
-annotate_panels  = _annotate_panels
+finalize           = _finalize
+style_colorbar     = _style_colorbar
+annotate_panels    = _annotate_panels
 enable_minor_ticks = _enable_minor_ticks
-apply_grid       = _apply_grid
+apply_grid         = _apply_grid
 
 
 # ── Public API ───────────────────────────────────────────────────────
@@ -500,7 +534,7 @@ class TableMaker:
         self.columns = columns or ["Parameter", "Value", "Unit"]
         self.data = []
         self.mode = mode
-        self._jupyter = "ipykernel" in sys.modules
+        self._jupyter = _is_jupyter()
         self._prev_lines = 0
         self._handle = None
 
@@ -515,7 +549,7 @@ class TableMaker:
         LINE_COLOR = "currentColor"
         TEXT_COLOR = "currentColor"
         FONT_FAMILY = "'Times New Roman', Times, serif"
-        
+
         # Header cells
         hdr = ""
         for i, c in enumerate(self.columns):
@@ -534,7 +568,7 @@ class TableMaker:
             cells = ""
             is_last = (r == len(self.data) - 1)
             bottom_border = f"2.5px solid {LINE_COLOR}" if is_last else "none"
-            
+
             for i, c in enumerate(row):
                 align = "left" if i == 0 else "right"
                 cells += (
@@ -556,10 +590,6 @@ class TableMaker:
 
     def _render_text(self):
         """Rich-formatted text for terminal only."""
-        from io import StringIO
-        from rich.console import Console
-        from rich.table import Table
-
         buf = StringIO()
         t = Table(title=self.title)
         for i, col in enumerate(self.columns):
@@ -608,3 +638,223 @@ class TableMaker:
             ipy_display(HTML(self._render_html()))
         else:
             print(self._render_text(), end="")
+
+
+# ── ProgressBar ──────────────────────────────────────────────────────
+
+class ProgressBar:
+    """
+    Static-HTML progress bar in the TableMaker style.
+
+    Unlike ``tqdm.auto`` (which uses ipywidgets), this renders as plain
+    HTML in Jupyter via ``display(..., display_id=True)`` + ``.update()``.
+    The final state is therefore preserved as ``text/html`` cell output
+    when the notebook is committed to GitHub, where it renders as a
+    completed (frozen-at-100 %) progress bar instead of an empty widget.
+
+    Parameters
+    ----------
+    iterable : iterable, optional
+        Wrap an iterable for tqdm-style usage:
+        ``for x in ProgressBar(range(N), desc="..."):``.
+    total : int, optional
+        Total number of iterations.  Inferred from ``len(iterable)`` if
+        omitted.  When unknown, an indeterminate bar is shown.
+    desc : str, optional
+        Prefix label.
+    width : int, optional
+        Number of characters in the terminal-mode bar.
+    mininterval : float, optional
+        Minimum seconds between visual refreshes.  Essential for tight
+        loops — without it, fast iteration is bottlenecked by HTML
+        rendering rather than the actual workload.
+
+    Examples
+    --------
+    >>> for x in dg.track(range(1000), desc="Training"):
+    ...     do_work(x)
+
+    >>> with dg.ProgressBar(total=N, desc="Sweep") as pb:
+    ...     for i in range(N):
+    ...         compute()
+    ...         pb.update()
+    """
+
+    # ── Design constants (match TableMaker vibe) ──
+    _FONT = "'Times New Roman', Times, serif"
+    _BAR_PX = 260
+
+    def __init__(self, iterable=None, total=None, desc="",
+                 width=40, mininterval=0.1):
+        self.iterable = iterable
+        if total is None and iterable is not None:
+            try:
+                total = len(iterable)
+            except TypeError:
+                total = None
+        self.total = total
+        self.desc = desc
+        self.width = width
+        self.mininterval = mininterval
+
+        self.n = 0
+        self._start = None
+        self._last = 0.0
+        self._handle = None
+        self._jupyter = _is_jupyter()
+        self._closed = False
+
+    # ── Formatting helpers ──
+
+    @staticmethod
+    def _fmt_time(s):
+        if s is None or not np.isfinite(s):
+            return "?"
+        s = int(s)
+        h, rem = divmod(s, 3600)
+        m, sec = divmod(rem, 60)
+        return f"{h:d}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
+
+    def _stats(self):
+        elapsed = time.monotonic() - self._start if self._start else 0.0
+        rate = self.n / elapsed if elapsed > 0 else 0.0
+        eta = (self.total - self.n) / rate if (self.total and rate > 0) else None
+        frac = self.n / self.total if self.total else 0.0
+        return elapsed, rate, eta, frac
+
+    # ── Renderers ──
+
+    def _render_html(self):
+        elapsed, rate, eta, frac = self._stats()
+
+        if self.total:
+            pct = max(0.0, min(100.0, frac * 100))
+            bar = (
+                f'<span style="display:inline-block; width:{self._BAR_PX}px; '
+                f'height:12px; border:1.2px solid currentColor; '
+                f'vertical-align:middle; margin:0 10px; background:none; '
+                f'box-sizing:border-box">'
+                f'<span style="display:block; width:{pct:.2f}%; height:100%; '
+                f'background:currentColor; opacity:0.85"></span></span>'
+            )
+            label = f"{pct:5.1f}%"
+            stats = (
+                f"{self.n}/{self.total} "
+                f"[{self._fmt_time(elapsed)}&lt;{self._fmt_time(eta)}, "
+                f"{rate:.2f} it/s]"
+            )
+        else:
+            bar = (
+                f'<span style="display:inline-block; width:{self._BAR_PX}px; '
+                f'text-align:center; margin:0 10px; vertical-align:middle; '
+                f'opacity:0.7">·  ·  ·</span>'
+            )
+            label = f"{self.n}"
+            stats = f"[{self._fmt_time(elapsed)}, {rate:.2f} it/s]"
+
+        desc = (
+            f'<span style="font-weight:bold">{_html.escape(self.desc)}:</span> '
+            if self.desc else ''
+        )
+
+        return (
+            f'<div style="font-family:{self._FONT}; color:currentColor; '
+            f'font-size:13px; margin:6px 0; line-height:1.6; background:none">'
+            f'{desc}'
+            f'<span style="display:inline-block; min-width:48px; '
+            f'text-align:right">{label}</span>'
+            f'{bar}'
+            f'<span style="font-size:12px">{stats}</span>'
+            f'</div>'
+        )
+
+    def _render_text(self):
+        elapsed, rate, eta, frac = self._stats()
+        prefix = f"{self.desc}: " if self.desc else ""
+        if self.total:
+            filled = int(self.width * frac)
+            bar = "█" * filled + "·" * (self.width - filled)
+            return (
+                f"{prefix}{frac*100:5.1f}% |{bar}| "
+                f"{self.n}/{self.total} "
+                f"[{self._fmt_time(elapsed)}<{self._fmt_time(eta)}, "
+                f"{rate:.2f} it/s]"
+            )
+        return (
+            f"{prefix}{self.n} "
+            f"[{self._fmt_time(elapsed)}, {rate:.2f} it/s]"
+        )
+
+    # ── Refresh ──
+
+    def _refresh(self, force=False):
+        now = time.monotonic()
+        if not force and (now - self._last) < self.mininterval:
+            return
+        self._last = now
+
+        if self._jupyter:
+            from IPython.display import display, HTML
+            html = HTML(self._render_html())
+            if self._handle is None:
+                self._handle = display(html, display_id=True)
+            else:
+                self._handle.update(html)
+        else:
+            sys.stdout.write("\r\033[K" + self._render_text())
+            sys.stdout.flush()
+
+    # ── Public API ──
+
+    def update(self, n=1):
+        """Advance the counter by ``n`` and refresh if throttled interval has elapsed."""
+        if self._start is None:
+            self._start = time.monotonic()
+        self.n += n
+        is_done = self.total is not None and self.n >= self.total
+        self._refresh(force=is_done)
+
+    def set_description(self, desc):
+        """Change the prefix label and force a refresh."""
+        self.desc = desc
+        self._refresh(force=True)
+
+    def close(self):
+        """Force a final render so GitHub gets the completed bar in the cell output."""
+        if self._closed:
+            return
+        self._refresh(force=True)
+        if not self._jupyter:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        self._closed = True
+
+    # ── Iterator + context manager ──
+
+    def __iter__(self):
+        if self.iterable is None:
+            raise TypeError("ProgressBar has no iterable; use update() instead.")
+        if self._start is None:
+            self._start = time.monotonic()
+        self._refresh(force=True)
+        try:
+            for item in self.iterable:
+                yield item
+                self.update(1)
+        finally:
+            self.close()
+
+    def __enter__(self):
+        if self._start is None:
+            self._start = time.monotonic()
+        self._refresh(force=True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
+def track(iterable=None, **kwargs):
+    """tqdm-style convenience wrapper around :class:`ProgressBar`."""
+    return ProgressBar(iterable=iterable, **kwargs)
