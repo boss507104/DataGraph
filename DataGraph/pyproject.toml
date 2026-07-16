@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "DataGraph"
-version = "3.0.1"
+version = "3.1.0"
 description = "Publication-quality matplotlib styling"
 authors = [
     {name = "Hanseul Kang", email = "hanseul.kang@aalto.fi"}
