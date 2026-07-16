@@ -38,10 +38,41 @@ Version history
                            __all__ but never assigned, causing
                            AttributeError on import-time *-imports and on
                            direct attribute access).
+    3.1.0  (16 Jul 2026)  Bug-fix release:
+                           - TableMaker._render_html now HTML-escapes the
+                             title, column headers, and every cell value
+                             (previously unescaped, so "<", ">", "&" in
+                             data corrupted the markup).
+                           - Header <th> cells are now wrapped in a <tr>
+                             (previously emitted directly inside <thead>,
+                             which is invalid HTML).
+                           - rich is now genuinely lazily imported inside
+                             TableMaker._render_text, matching the 2.0.0
+                             changelog claim; it is no longer a hard
+                             dependency for users who only need styling.
+                           - TableMaker._render_text now wraps every cell
+                             in rich.text.Text so literal "[...]" in data
+                             (e.g. bracketed units) can never be
+                             misinterpreted as Rich console markup.
+                           - Console(force_terminal=...) now reflects the
+                             real stdout tty state, so terminal colour is
+                             preserved instead of being unconditionally
+                             stripped by the StringIO buffering trick.
+                           - TableMaker(mode=...) now validates against
+                             {"static", "live", "dynamic"} and raises
+                             ValueError on an unrecognised mode instead of
+                             silently behaving like "static".
+                           - _resolve_palette now warns (UserWarning) when
+                             falling back to the default palette on an
+                             unrecognised name, instead of failing silently.
+                           - ProgressBar._render_text now clamps the
+                             completion fraction to [0, 1] before computing
+                             the filled-bar width, matching the clamp
+                             already present in _render_html.
 """
 
-__version__ = "3.0.1"
-__date__ = "19 May 2026"
+__version__ = "3.1.0"
+__date__ = "16 Jul 2026"
 
 __all__ = [
     # ── Constants ──
@@ -75,6 +106,7 @@ __all__ = [
 import sys
 import time
 import html as _html
+import warnings
 from contextlib import contextmanager
 
 import numpy as np
@@ -82,8 +114,11 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
 from io import StringIO
-from rich.console import Console
-from rich.table import Table
+
+# NOTE: rich is intentionally NOT imported at module level. TableMaker is
+# the only feature that needs it, and its renderers import rich lazily
+# (see TableMaker._render_text), so set_style()/get_palette()/etc. work
+# even if rich isn't installed.
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -230,6 +265,12 @@ def _resolve_palette(name):
     if "tab" in p or "tableau" in p:  return "tableau10"
     if "ibm" in p:                    return "ibm"
     if "okabe" in p or "ito" in p:    return "okabe-ito"
+    warnings.warn(
+        f"Unrecognised palette name {name!r}; falling back to 'okabe-ito'. "
+        f"Known palettes: {sorted(_PALETTES)}",
+        UserWarning,
+        stacklevel=3,
+    )
     return "okabe-ito"  # Default palette
 
 
@@ -526,10 +567,17 @@ def fixed_frame(figure_size=None, subplot=None, **ax_kw):
 
 # ── TableMaker ───────────────────────────────────────────────────────
 
+_TABLE_MODES = ("static", "live", "dynamic")
+
+
 class TableMaker:
     """Table for console / Jupyter with optional live updates."""
 
     def __init__(self, title="Analysis", columns=None, mode="static"):
+        if mode not in _TABLE_MODES:
+            raise ValueError(
+                f"Unknown mode {mode!r}; expected one of {_TABLE_MODES}."
+            )
         self.title = title
         self.columns = columns or ["Parameter", "Value", "Unit"]
         self.data = []
@@ -544,23 +592,27 @@ class TableMaker:
         """
         Academic-style (Booktabs) table.
         Works perfectly in both Light and Dark modes using 'currentColor'.
+        All text content is HTML-escaped to survive arbitrary data.
         """
         # ── Design Constants ──
         LINE_COLOR = "currentColor"
         TEXT_COLOR = "currentColor"
         FONT_FAMILY = "'Times New Roman', Times, serif"
 
-        # Header cells
-        hdr = ""
+        esc = _html.escape
+
+        # Header cells (wrapped in a single <tr>)
+        hdr_cells = ""
         for i, c in enumerate(self.columns):
             align = "left" if i == 0 else "right"
-            hdr += (
+            hdr_cells += (
                 f'<th style="padding:10px 14px; text-align:{align}; '
                 f'font-weight:bold; color:{TEXT_COLOR}; '
                 f'border-top:2.5px solid {LINE_COLOR}; '
                 f'border-bottom:1.2px solid {LINE_COLOR}; '
-                f'font-size:14px; background:none">{c}</th>'
+                f'font-size:14px; background:none">{esc(str(c))}</th>'
             )
+        hdr = f'<tr>{hdr_cells}</tr>'
 
         # Body rows
         body = ""
@@ -574,14 +626,15 @@ class TableMaker:
                 cells += (
                     f'<td style="padding:8px 14px; text-align:{align}; '
                     f'font-size:13px; color:{TEXT_COLOR}; '
-                    f'border-bottom:{bottom_border}; background:none">{c}</td>'
+                    f'border-bottom:{bottom_border}; background:none">'
+                    f'{esc(str(c))}</td>'
                 )
             body += f'<tr>{cells}</tr>'
 
         return (
             f'<div style="margin:15px 0; display:inline-block; background:none">'
             f'<div style="font-family:{FONT_FAMILY}; font-weight:bold; color:{TEXT_COLOR}; '
-            f'font-size:14px; margin-bottom:10px; text-align:left">{self.title}</div>'
+            f'font-size:14px; margin-bottom:10px; text-align:left">{esc(str(self.title))}</div>'
             f'<table style="border-collapse:collapse; font-family:{FONT_FAMILY}; '
             f'border:none; line-height:1.5; color:{TEXT_COLOR}; background:none">'
             f'<thead>{hdr}</thead>'
@@ -589,14 +642,28 @@ class TableMaker:
         )
 
     def _render_text(self):
-        """Rich-formatted text for terminal only."""
+        """Rich-formatted text for terminal only. rich is imported lazily
+        so it is not a hard dependency for users who never call display()
+        or add_row() in live/dynamic mode."""
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+
         buf = StringIO()
-        t = Table(title=self.title)
+        # Text objects are always literal — square brackets in data can
+        # never be misread as Rich console markup (e.g. "[phi=0.4]").
+        t = Table(title=Text(str(self.title)))
         for i, col in enumerate(self.columns):
-            t.add_column(col, justify="left" if i == 0 else "right")
+            t.add_column(Text(str(col)), justify="left" if i == 0 else "right")
         for row in self.data:
-            t.add_row(*row)
-        Console(file=buf, force_jupyter=False, width=120).print(t)
+            t.add_row(*[Text(str(v)) for v in row])
+
+        Console(
+            file=buf,
+            force_jupyter=False,
+            force_terminal=sys.stdout.isatty(),
+            width=120,
+        ).print(t)
         return buf.getvalue()
 
     # ── Row management ──
@@ -772,10 +839,12 @@ class ProgressBar:
         elapsed, rate, eta, frac = self._stats()
         prefix = f"{self.desc}: " if self.desc else ""
         if self.total:
-            filled = int(self.width * frac)
+            frac_clamped = max(0.0, min(1.0, frac))
+            filled = int(self.width * frac_clamped)
             bar = "█" * filled + "·" * (self.width - filled)
+            pct = frac_clamped * 100
             return (
-                f"{prefix}{frac*100:5.1f}% |{bar}| "
+                f"{prefix}{pct:5.1f}% |{bar}| "
                 f"{self.n}/{self.total} "
                 f"[{self._fmt_time(elapsed)}<{self._fmt_time(eta)}, "
                 f"{rate:.2f} it/s]"
